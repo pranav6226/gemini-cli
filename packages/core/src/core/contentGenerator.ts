@@ -16,6 +16,7 @@ import {
 import { createCodeAssistContentGenerator } from '../code_assist/codeAssist.js';
 import { DEFAULT_GEMINI_MODEL } from '../config/models.js';
 import { getEffectiveModel } from './modelCheck.js';
+import { OpenAI } from 'openai';
 
 /**
  * Interface abstracting the core functionalities for generating content and counting tokens.
@@ -38,6 +39,7 @@ export enum AuthType {
   LOGIN_WITH_GOOGLE = 'oauth-personal',
   USE_GEMINI = 'gemini-api-key',
   USE_VERTEX_AI = 'vertex-ai',
+  USE_OPENAI = 'openai',
 }
 
 export type ContentGeneratorConfig = {
@@ -56,6 +58,7 @@ export async function createContentGeneratorConfig(
   const googleApiKey = process.env.GOOGLE_API_KEY;
   const googleCloudProject = process.env.GOOGLE_CLOUD_PROJECT;
   const googleCloudLocation = process.env.GOOGLE_CLOUD_LOCATION;
+  const openaiApiKey = process.env.OPENAI_API_KEY;
 
   // Use runtime model from config if available, otherwise fallback to parameter or default
   const effectiveModel = config?.getModel?.() || model || DEFAULT_GEMINI_MODEL;
@@ -76,7 +79,6 @@ export async function createContentGeneratorConfig(
       contentGeneratorConfig.apiKey,
       contentGeneratorConfig.model,
     );
-
     return contentGeneratorConfig;
   }
 
@@ -92,7 +94,12 @@ export async function createContentGeneratorConfig(
       contentGeneratorConfig.apiKey,
       contentGeneratorConfig.model,
     );
+    return contentGeneratorConfig;
+  }
 
+  if (authType === AuthType.USE_OPENAI && openaiApiKey) {
+    contentGeneratorConfig.apiKey = openaiApiKey;
+    // Model is set above, can be overridden by config
     return contentGeneratorConfig;
   }
 
@@ -126,8 +133,56 @@ export async function createContentGenerator(
       vertexai: config.vertexai,
       httpOptions,
     });
-
     return googleGenAI.models;
+  }
+
+  if (config.authType === AuthType.USE_OPENAI && config.apiKey) {
+    const openai = new OpenAI({ apiKey: config.apiKey });
+    // Return a ContentGenerator-compatible wrapper for OpenAI
+    return {
+      async generateContent(request) {
+        // Only support basic text prompt for now
+        let prompt = '';
+        if (typeof request.contents === 'string') {
+          prompt = request.contents;
+        } else if (Array.isArray(request.contents)) {
+          // Try to extract text from each content object
+          prompt = request.contents.map((c) => {
+            if (typeof c === 'string') return c;
+            if ('text' in c) return (c.text ?? '');
+            if ('parts' in c && Array.isArray(c.parts)) {
+              return c.parts.map((p) => (typeof p === 'string' ? p : (p.text ?? ''))).join('\n');
+            }
+            return '';
+          }).join('\n');
+        } else if (request.contents && typeof request.contents === 'object' && 'text' in request.contents) {
+          prompt = (request.contents as any).text ?? '';
+        }
+        const completion = await openai.chat.completions.create({
+          model: config.model || 'gpt-4',
+          messages: [{ role: 'user', content: prompt }],
+        });
+        // Return a Gemini-like response structure
+        return {
+          candidates: [
+            {
+              content: {
+                parts: [{ text: completion.choices[0].message.content }],
+              },
+            },
+          ],
+        } as GenerateContentResponse;
+      },
+      async generateContentStream(request) {
+        throw new Error('OpenAI streaming not implemented');
+      },
+      async countTokens(request) {
+        throw new Error('OpenAI token counting not implemented');
+      },
+      async embedContent(request) {
+        throw new Error('OpenAI embedding not implemented');
+      },
+    };
   }
 
   throw new Error(
