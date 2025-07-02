@@ -159,7 +159,7 @@ export async function createContentGenerator(
           prompt = (request.contents as any).text ?? '';
         }
         const completion = await openai.chat.completions.create({
-          model: config.model || 'gpt-4',
+          model: config.model || 'o4-mini',
           messages: [{ role: 'user', content: prompt }],
         });
         // Return a Gemini-like response structure
